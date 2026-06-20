@@ -1,0 +1,957 @@
+import React, { useState, useEffect } from "react";
+import {
+  ShoppingCart, User, Search, Plus, Minus, Trash2, Settings, Package,
+  CheckCircle2, X, ArrowLeft, AlertCircle, LogOut, ClipboardList, Loader2,
+  QrCode, Edit3
+} from "lucide-react";
+
+const DEFAULT_SETTINGS = { storeName: "maeve.co", upiId: "", payeeName: "", sellerPin: "" };
+
+function generateId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "id-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
+}
+
+function formatINR(n) {
+  const num = Number(n) || 0;
+  return "₹" + num.toLocaleString("en-IN");
+}
+
+function buildUpiQrUrl(upiId, payeeName, amount, note) {
+  const upiString = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(payeeName || "Seller")}&am=${amount}&cu=INR&tn=${encodeURIComponent(note || "Order payment")}`;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(upiString)}`;
+}
+
+function parseBulkProducts(text) {
+  const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const newProducts = [];
+  const errors = [];
+  lines.forEach((line, idx) => {
+    const parts = line.split("|").map((p) => p.trim());
+    const [name, priceStr, stockStr, category, imageUrl, description] = parts;
+    if (!name) { errors.push(`Line ${idx + 1}: missing product name — skipped`); return; }
+    const price = parseFloat(priceStr);
+    if (isNaN(price) || price <= 0) { errors.push(`Line ${idx + 1} ("${name}"): invalid price — skipped`); return; }
+    let stock = parseInt(stockStr, 10);
+    if (isNaN(stock) || stock < 0) stock = 0;
+    newProducts.push({
+      id: generateId(),
+      name,
+      price,
+      stock,
+      category: category || "Uncategorized",
+      imageUrl: imageUrl || "",
+      description: description || "",
+    });
+  });
+  return { newProducts, errors };
+}
+
+function ProductImage({ src, alt, className, fallbackText }) {
+  const [error, setError] = useState(false);
+  if (!src || error) {
+    return (
+      <div className={className + " flex items-center justify-center bg-gradient-to-br from-red-200 to-amber-200 text-red-800 font-bold text-2xl"}>
+        {fallbackText}
+      </div>
+    );
+  }
+  return <img src={src} alt={alt} className={className} loading="lazy" onError={() => setError(true)} />;
+}
+
+function Toast({ toast }) {
+  if (!toast) return null;
+  const isError = toast.type === "error";
+  return (
+    <div className={"fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium text-white " + (isError ? "bg-stone-800" : "bg-red-700")}>
+      {toast.message}
+    </div>
+  );
+}
+
+function ConfirmModal({ confirmDialog, onCancel }) {
+  if (!confirmDialog) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl p-5 max-w-sm w-full shadow-xl">
+        <p className="text-stone-800 text-sm">{confirmDialog.message}</p>
+        <div className="mt-4 flex gap-2 justify-end">
+          <button onClick={onCancel} className="px-3 py-1.5 rounded-lg text-sm font-medium text-stone-600 hover:bg-stone-100">Cancel</button>
+          <button onClick={confirmDialog.onConfirm} className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-700 text-white hover:bg-red-800">Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Header({ settings, cartCount, view, setView, profile, sellerMode, onOpenSellerGate, onExitSeller, search, setSearch }) {
+  return (
+    <header className="sticky top-0 z-40 bg-red-800 text-white shadow-md">
+      <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+        <button onClick={() => setView(sellerMode ? "admin" : "shop")} className="font-bold text-lg tracking-tight">
+          {settings.storeName || "maeve.co"}
+        </button>
+
+        {!sellerMode && (
+          <div className="flex-1 min-w-[140px] order-3 sm:order-none">
+            <div className="relative">
+              <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-red-300" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search products..."
+                className="w-full bg-red-700/60 placeholder-red-200 text-white text-sm rounded-lg pl-8 pr-3 py-1.5 outline-none focus:ring-2 focus:ring-amber-300"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1 ml-auto">
+          {!sellerMode && (
+            <>
+              <button onClick={() => setView("my-orders")} title="My orders" className={"p-2 rounded-lg hover:bg-red-700 " + (view === "my-orders" ? "bg-red-700" : "")}>
+                <ClipboardList size={18} />
+              </button>
+              <button onClick={() => setView("account")} title="Account" className={"p-2 rounded-lg hover:bg-red-700 " + (view === "account" ? "bg-red-700" : "")}>
+                <User size={18} />
+              </button>
+              <button onClick={() => setView("cart")} title="Cart" className={"relative p-2 rounded-lg hover:bg-red-700 " + (view === "cart" ? "bg-red-700" : "")}>
+                <ShoppingCart size={18} />
+                {cartCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-amber-400 text-red-900 text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                    {cartCount > 9 ? "9+" : cartCount}
+                  </span>
+                )}
+              </button>
+              <button onClick={onOpenSellerGate} title="Seller dashboard" className="p-2 rounded-lg hover:bg-red-700">
+                <Settings size={18} />
+              </button>
+            </>
+          )}
+          {sellerMode && (
+            <button onClick={onExitSeller} title="Exit seller mode" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-sm">
+              <LogOut size={15} /> Exit
+            </button>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function CategoryBar({ categories, categoryFilter, setCategoryFilter }) {
+  return (
+    <div className="bg-white border-b border-red-100 sticky top-[60px] z-30">
+      <div className="max-w-6xl mx-auto px-4 py-2 flex gap-2 overflow-x-auto">
+        {categories.map((c) => (
+          <button
+            key={c}
+            onClick={() => setCategoryFilter(c)}
+            className={"shrink-0 text-xs font-medium px-3 py-1.5 rounded-full border transition " +
+              (categoryFilter === c ? "bg-red-700 text-white border-red-700" : "bg-white text-stone-600 border-stone-200 hover:border-red-300")}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductCard({ product, cartQty, onAdd, onChangeQty }) {
+  return (
+    <div className="bg-white rounded-xl border border-red-100 shadow-sm overflow-hidden flex flex-col hover:shadow-md transition">
+      <ProductImage src={product.imageUrl} alt={product.name} className="w-full h-36 object-cover" fallbackText={(product.name || "?")[0].toUpperCase()} />
+      <div className="p-3 flex flex-col flex-1">
+        <h3 className="font-semibold text-sm text-stone-900 leading-snug line-clamp-2">{product.name}</h3>
+        <p className="text-xs text-stone-400 mt-0.5">{product.category}</p>
+        <div className="mt-auto pt-2 flex items-center justify-between">
+          <span className="font-bold text-red-700">{formatINR(product.price)}</span>
+          {product.stock <= 0 ? null : product.stock <= 5 ? (
+            <span className="text-[11px] text-amber-700 font-medium">Only {product.stock} left</span>
+          ) : null}
+        </div>
+        {product.stock <= 0 ? (
+          <button disabled className="mt-2 w-full py-1.5 rounded-lg bg-stone-100 text-stone-400 text-sm font-medium cursor-not-allowed">
+            Out of stock
+          </button>
+        ) : cartQty > 0 ? (
+          <div className="mt-2 flex items-center justify-between bg-red-700 rounded-lg overflow-hidden">
+            <button onClick={() => onChangeQty(product.id, -1)} className="px-3 py-1.5 text-white hover:bg-red-800"><Minus size={14} /></button>
+            <span className="text-white text-sm font-semibold">{cartQty}</span>
+            <button onClick={() => onChangeQty(product.id, 1)} className="px-3 py-1.5 text-white hover:bg-red-800"><Plus size={14} /></button>
+          </div>
+        ) : (
+          <button onClick={() => onAdd(product)} className="mt-2 w-full py-1.5 rounded-lg bg-red-700 hover:bg-red-800 text-white text-sm font-medium transition">
+            Add to cart
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ShopView({ products, search, categoryFilter, cart, onAdd, onChangeQty, sellerConfigured }) {
+  const filtered = products.filter((p) => {
+    const matchCat = categoryFilter === "All" || p.category === categoryFilter;
+    const matchSearch = search.trim() === "" || p.name.toLowerCase().includes(search.toLowerCase());
+    return matchCat && matchSearch;
+  });
+  const cartMap = {};
+  cart.forEach((i) => { cartMap[i.productId] = i.qty; });
+
+  if (products.length === 0) {
+    return (
+      <div className="text-center py-20 text-stone-500">
+        <Package size={36} className="mx-auto mb-3 text-red-300" />
+        <p className="font-medium">No products yet</p>
+        <p className="text-sm mt-1">{sellerConfigured ? "Open the seller dashboard to add your catalog." : "Tap the gear icon to set up your store and add products."}</p>
+      </div>
+    );
+  }
+
+  if (filtered.length === 0) {
+    return <div className="text-center py-16 text-stone-500 text-sm">No products match your search.</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+      {filtered.map((p) => (
+        <ProductCard key={p.id} product={p} cartQty={cartMap[p.id] || 0} onAdd={onAdd} onChangeQty={onChangeQty} />
+      ))}
+    </div>
+  );
+}
+
+function CartView({ cart, products, onChangeQty, onRemove, onCheckout, setView }) {
+  const lines = cart.map((i) => ({ ...i, product: products.find((p) => p.id === i.productId) })).filter((l) => l.product);
+  const total = lines.reduce((s, l) => s + l.product.price * l.qty, 0);
+
+  if (lines.length === 0) {
+    return (
+      <div className="text-center py-20 text-stone-500">
+        <ShoppingCart size={36} className="mx-auto mb-3 text-red-300" />
+        <p className="font-medium">Your cart is empty</p>
+        <button onClick={() => setView("shop")} className="mt-4 px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-medium hover:bg-red-800">
+          Continue shopping
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-xl mx-auto">
+      <h2 className="text-lg font-bold text-stone-900 mb-4">Your cart</h2>
+      <div className="space-y-3">
+        {lines.map((l) => (
+          <div key={l.productId} className="flex items-center gap-3 bg-white rounded-xl border border-red-100 p-3">
+            <ProductImage src={l.product.imageUrl} alt={l.product.name} className="w-14 h-14 rounded-lg object-cover shrink-0" fallbackText={l.product.name[0].toUpperCase()} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-stone-900 truncate">{l.product.name}</p>
+              <p className="text-xs text-stone-500">{formatINR(l.product.price)} each</p>
+            </div>
+            <div className="flex items-center gap-2 bg-red-50 rounded-lg">
+              <button onClick={() => onChangeQty(l.productId, -1)} className="p-1.5 text-red-700 hover:bg-red-100 rounded-l-lg"><Minus size={13} /></button>
+              <span className="text-sm font-semibold w-4 text-center">{l.qty}</span>
+              <button onClick={() => onChangeQty(l.productId, 1)} className="p-1.5 text-red-700 hover:bg-red-100 rounded-r-lg"><Plus size={13} /></button>
+            </div>
+            <button onClick={() => onRemove(l.productId)} className="p-1.5 text-stone-400 hover:text-red-600"><Trash2 size={16} /></button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-5 bg-white rounded-xl border border-red-100 p-4 flex items-center justify-between">
+        <span className="text-stone-600 text-sm">Total</span>
+        <span className="text-xl font-bold text-red-700">{formatINR(total)}</span>
+      </div>
+      <button onClick={onCheckout} className="mt-4 w-full py-3 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800 transition">
+        Proceed to checkout
+      </button>
+    </div>
+  );
+}
+
+function Field({ label, error, children }) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-medium text-stone-600 mb-1">{label}</label>
+      {children}
+      {error && <p className="text-xs text-red-600 mt-1 flex items-center gap-1"><AlertCircle size={12} />{error}</p>}
+    </div>
+  );
+}
+
+const inputCls = "w-full border border-stone-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-red-300 focus:border-red-400";
+
+function AccountSetup({ accountForm, setAccountForm, onSave, error }) {
+  return (
+    <div className="max-w-sm mx-auto bg-white rounded-xl border border-red-100 p-6 shadow-sm mt-6">
+      <h2 className="text-lg font-bold text-stone-900 mb-1">Create your account</h2>
+      <p className="text-xs text-stone-500 mb-4">Just the basics — this is saved to your device so you don't have to re-enter it next time.</p>
+      <Field label="Full name">
+        <input className={inputCls} value={accountForm.name} onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })} placeholder="e.g. Lia Sharma" />
+      </Field>
+      <Field label="Phone number">
+        <input className={inputCls} value={accountForm.phone} onChange={(e) => setAccountForm({ ...accountForm, phone: e.target.value })} placeholder="10-digit mobile number" />
+      </Field>
+      <Field label="Email (optional)">
+        <input className={inputCls} value={accountForm.email} onChange={(e) => setAccountForm({ ...accountForm, email: e.target.value })} placeholder="you@example.com" />
+      </Field>
+      {error && <p className="text-xs text-red-600 mb-3 flex items-center gap-1"><AlertCircle size={12} />{error}</p>}
+      <button onClick={onSave} className="w-full py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800 transition">Create account</button>
+    </div>
+  );
+}
+
+function AccountView({ profile, accountForm, setAccountForm, onSave, error, toast }) {
+  return (
+    <div className="max-w-sm mx-auto bg-white rounded-xl border border-red-100 p-6 shadow-sm mt-2">
+      <h2 className="text-lg font-bold text-stone-900 mb-4">Your account</h2>
+      <Field label="Full name">
+        <input className={inputCls} value={accountForm.name} onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })} />
+      </Field>
+      <Field label="Phone number">
+        <input className={inputCls} value={accountForm.phone} onChange={(e) => setAccountForm({ ...accountForm, phone: e.target.value })} />
+      </Field>
+      <Field label="Email">
+        <input className={inputCls} value={accountForm.email} onChange={(e) => setAccountForm({ ...accountForm, email: e.target.value })} />
+      </Field>
+      {error && <p className="text-xs text-red-600 mb-3">{error}</p>}
+      <button onClick={onSave} className="w-full py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800 transition">Save changes</button>
+    </div>
+  );
+}
+
+function CheckoutView({ checkoutForm, setCheckoutForm, errors, onContinue, setView }) {
+  return (
+    <div className="max-w-sm mx-auto">
+      <button onClick={() => setView("cart")} className="flex items-center gap-1 text-sm text-red-700 mb-3"><ArrowLeft size={14} /> Back to cart</button>
+      <div className="bg-white rounded-xl border border-red-100 p-5 shadow-sm">
+        <h2 className="text-lg font-bold text-stone-900 mb-4">Shipping details</h2>
+        <Field label="Full name" error={errors.name}>
+          <input className={inputCls} value={checkoutForm.name} onChange={(e) => setCheckoutForm({ ...checkoutForm, name: e.target.value })} />
+        </Field>
+        <Field label="Phone number" error={errors.phone}>
+          <input className={inputCls} value={checkoutForm.phone} onChange={(e) => setCheckoutForm({ ...checkoutForm, phone: e.target.value })} />
+        </Field>
+        <Field label="Address" error={errors.address}>
+          <textarea className={inputCls} rows={2} value={checkoutForm.address} onChange={(e) => setCheckoutForm({ ...checkoutForm, address: e.target.value })} />
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="City" error={errors.city}>
+            <input className={inputCls} value={checkoutForm.city} onChange={(e) => setCheckoutForm({ ...checkoutForm, city: e.target.value })} />
+          </Field>
+          <Field label="Pincode" error={errors.pincode}>
+            <input className={inputCls} value={checkoutForm.pincode} onChange={(e) => setCheckoutForm({ ...checkoutForm, pincode: e.target.value })} />
+          </Field>
+        </div>
+        <button onClick={onContinue} className="w-full mt-2 py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800 transition">
+          Continue to payment
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PaymentView({ total, settings, utr, setUtr, onConfirmPaid, setView, submitting }) {
+  const hasUpi = !!settings.upiId;
+  const qrUrl = hasUpi ? buildUpiQrUrl(settings.upiId, settings.payeeName || settings.storeName, total, `Payment to ${settings.storeName}`) : null;
+  return (
+    <div className="max-w-sm mx-auto">
+      <button onClick={() => setView("checkout")} className="flex items-center gap-1 text-sm text-red-700 mb-3"><ArrowLeft size={14} /> Back</button>
+      <div className="bg-white rounded-xl border border-red-100 p-5 shadow-sm text-center">
+        <h2 className="text-lg font-bold text-stone-900 mb-1">Scan to pay</h2>
+        <p className="text-2xl font-bold text-red-700 mb-4">{formatINR(total)}</p>
+
+        {hasUpi ? (
+          <>
+            <div className="bg-red-50 rounded-xl p-4 inline-block">
+              <img src={qrUrl} alt="UPI payment QR code" className="w-56 h-56 mx-auto" />
+            </div>
+            <p className="text-xs text-stone-500 mt-3">Scan with any UPI app — GPay, PhonePe, Paytm — and pay the amount above.</p>
+          </>
+        ) : (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg p-3 flex items-start gap-2 text-left">
+            <AlertCircle size={16} className="shrink-0 mt-0.5" />
+            <span>The seller hasn't added a UPI ID yet, so no QR code is available. You can still place the order and arrange payment with them directly.</span>
+          </div>
+        )}
+
+        <div className="mt-4 text-left">
+          <Field label="Transaction reference / UTR (optional, helps verification)">
+            <input className={inputCls} value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="e.g. 421987654321" />
+          </Field>
+        </div>
+
+        <button disabled={submitting} onClick={onConfirmPaid} className="w-full py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800 transition disabled:opacity-60 flex items-center justify-center gap-2">
+          {submitting && <Loader2 size={16} className="animate-spin" />}
+          I've completed payment
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmationView({ lastOrderId, setView }) {
+  return (
+    <div className="max-w-sm mx-auto text-center py-10">
+      <CheckCircle2 size={44} className="mx-auto text-red-700 mb-3" />
+      <h2 className="text-lg font-bold text-stone-900">Order placed!</h2>
+      <p className="text-sm text-stone-500 mt-1">Order ID: <span className="font-mono font-medium">{lastOrderId}</span></p>
+      <p className="text-xs text-stone-400 mt-2">The seller will verify your payment and update your order status.</p>
+      <div className="flex gap-2 justify-center mt-5">
+        <button onClick={() => setView("my-orders")} className="px-4 py-2 rounded-lg border border-red-200 text-red-700 text-sm font-medium hover:bg-red-50">View my orders</button>
+        <button onClick={() => setView("shop")} className="px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-medium hover:bg-red-800">Continue shopping</button>
+      </div>
+    </div>
+  );
+}
+
+const STATUS_STYLES = {
+  pending_verification: "bg-amber-100 text-amber-800",
+  verified: "bg-blue-100 text-blue-800",
+  shipped: "bg-purple-100 text-purple-800",
+  delivered: "bg-green-100 text-green-800",
+  cancelled: "bg-stone-200 text-stone-600",
+};
+const STATUS_LABEL = {
+  pending_verification: "Payment pending verification",
+  verified: "Payment verified",
+  shipped: "Shipped",
+  delivered: "Delivered",
+  cancelled: "Cancelled",
+};
+
+function MyOrdersView({ orders, customerId, setView }) {
+  const mine = orders.filter((o) => o.customerId === customerId).slice().reverse();
+  if (mine.length === 0) {
+    return (
+      <div className="text-center py-20 text-stone-500">
+        <ClipboardList size={36} className="mx-auto mb-3 text-red-300" />
+        <p className="font-medium">No orders yet</p>
+        <button onClick={() => setView("shop")} className="mt-4 px-4 py-2 rounded-lg bg-red-700 text-white text-sm font-medium hover:bg-red-800">Start shopping</button>
+      </div>
+    );
+  }
+  return (
+    <div className="max-w-xl mx-auto space-y-3">
+      <h2 className="text-lg font-bold text-stone-900 mb-2">My orders</h2>
+      {mine.map((o) => (
+        <div key={o.id} className="bg-white rounded-xl border border-red-100 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-xs text-stone-500">{o.id}</span>
+            <span className={"text-[11px] font-semibold px-2 py-0.5 rounded-full " + STATUS_STYLES[o.status]}>{STATUS_LABEL[o.status]}</span>
+          </div>
+          <ul className="text-sm text-stone-700 space-y-0.5 mb-2">
+            {o.items.map((it, idx) => <li key={idx}>{it.name} × {it.qty}</li>)}
+          </ul>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-stone-400">{new Date(o.timestamp).toLocaleDateString()}</span>
+            <span className="font-bold text-red-700">{formatINR(o.total)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminProductsTab({ products, onSave, onDelete, showToastFn }) {
+  const [mode, setMode] = useState("list");
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({ name: "", price: "", stock: "", category: "", imageUrl: "", description: "" });
+  const [formError, setFormError] = useState("");
+  const [bulkText, setBulkText] = useState("");
+  const [bulkResult, setBulkResult] = useState(null);
+  const [adminSearch, setAdminSearch] = useState("");
+
+  function startAdd() {
+    setEditingId(null);
+    setForm({ name: "", price: "", stock: "", category: "", imageUrl: "", description: "" });
+    setFormError("");
+    setMode("form");
+  }
+  function startEdit(p) {
+    setEditingId(p.id);
+    setForm({ name: p.name, price: String(p.price), stock: String(p.stock), category: p.category, imageUrl: p.imageUrl, description: p.description });
+    setFormError("");
+    setMode("form");
+  }
+  function submitForm() {
+    if (!form.name.trim()) { setFormError("Product name is required."); return; }
+    const price = parseFloat(form.price);
+    if (isNaN(price) || price <= 0) { setFormError("Enter a valid price."); return; }
+    let stock = parseInt(form.stock, 10);
+    if (isNaN(stock) || stock < 0) stock = 0;
+    const product = { id: editingId || generateId(), name: form.name.trim(), price, stock, category: form.category.trim() || "Uncategorized", imageUrl: form.imageUrl.trim(), description: form.description.trim() };
+    let updated;
+    if (editingId) updated = products.map((p) => (p.id === editingId ? product : p));
+    else updated = [...products, product];
+    onSave(updated);
+    showToastFn(editingId ? "Product updated" : "Product added", "success");
+    setMode("list");
+  }
+  function submitBulk() {
+    const { newProducts, errors } = parseBulkProducts(bulkText);
+    if (newProducts.length > 0) {
+      onSave([...products, ...newProducts]);
+    }
+    setBulkResult({ added: newProducts.length, errors });
+    if (newProducts.length > 0) { setBulkText(""); showToastFn(`Added ${newProducts.length} products`, "success"); }
+  }
+
+  const filtered = products.filter((p) => p.name.toLowerCase().includes(adminSearch.toLowerCase()));
+
+  if (mode === "form") {
+    return (
+      <div className="max-w-md">
+        <button onClick={() => setMode("list")} className="flex items-center gap-1 text-sm text-red-700 mb-3"><ArrowLeft size={14} /> Back to products</button>
+        <h3 className="font-bold text-stone-900 mb-3">{editingId ? "Edit product" : "Add product"}</h3>
+        <Field label="Name"><input className={inputCls} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Price (₹)"><input className={inputCls} value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} /></Field>
+          <Field label="Stock"><input className={inputCls} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} /></Field>
+        </div>
+        <Field label="Category"><input className={inputCls} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="e.g. Rings" /></Field>
+        <Field label="Image URL (optional)"><input className={inputCls} value={form.imageUrl} onChange={(e) => setForm({ ...form, imageUrl: e.target.value })} placeholder="https://..." /></Field>
+        <Field label="Description (optional)"><textarea className={inputCls} rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+        {formError && <p className="text-xs text-red-600 mb-3">{formError}</p>}
+        <button onClick={submitForm} className="w-full py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800">{editingId ? "Save changes" : "Add product"}</button>
+      </div>
+    );
+  }
+
+  if (mode === "bulk") {
+    return (
+      <div className="max-w-lg">
+        <button onClick={() => setMode("list")} className="flex items-center gap-1 text-sm text-red-700 mb-3"><ArrowLeft size={14} /> Back to products</button>
+        <h3 className="font-bold text-stone-900 mb-2">Bulk import products</h3>
+        <p className="text-xs text-stone-500 mb-2">One product per line, fields separated by <span className="font-mono">|</span>:</p>
+        <p className="text-xs font-mono bg-stone-100 rounded-lg p-2 mb-3 overflow-x-auto whitespace-nowrap">Name | Price | Stock | Category | Image URL | Description</p>
+        <textarea
+          className={inputCls + " font-mono"}
+          rows={10}
+          value={bulkText}
+          onChange={(e) => setBulkText(e.target.value)}
+          placeholder={"Dragon Sword Pendant | 399 | 20 | Pendants | https://... | Stainless steel, anti-tarnish\nGold Hoop Earrings | 249 | 35 | Earrings | https://..."}
+        />
+        <button onClick={submitBulk} className="w-full mt-3 py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800">Import products</button>
+        {bulkResult && (
+          <div className="mt-3 text-sm">
+            <p className="text-green-700 font-medium">{bulkResult.added} product{bulkResult.added !== 1 ? "s" : ""} added.</p>
+            {bulkResult.errors.length > 0 && (
+              <div className="mt-1 text-xs text-red-600 max-h-32 overflow-y-auto">
+                {bulkResult.errors.map((e, i) => <p key={i}>{e}</p>)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="relative flex-1 min-w-[160px]">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400" />
+          <input value={adminSearch} onChange={(e) => setAdminSearch(e.target.value)} placeholder="Search your products..." className="w-full border border-stone-300 rounded-lg pl-8 pr-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-red-300" />
+        </div>
+        <button onClick={startAdd} className="px-3 py-1.5 rounded-lg bg-red-700 text-white text-sm font-medium hover:bg-red-800 flex items-center gap-1"><Plus size={14} /> Add one</button>
+        <button onClick={() => { setMode("bulk"); setBulkResult(null); }} className="px-3 py-1.5 rounded-lg border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50">Bulk import</button>
+      </div>
+      <p className="text-xs text-stone-400 mb-3">{products.length} product{products.length !== 1 ? "s" : ""} total</p>
+      <div className="space-y-2">
+        {filtered.map((p) => (
+          <div key={p.id} className="flex items-center gap-3 bg-white rounded-lg border border-stone-200 p-2.5">
+            <ProductImage src={p.imageUrl} alt={p.name} className="w-11 h-11 rounded-md object-cover shrink-0" fallbackText={p.name[0].toUpperCase()} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-stone-900 truncate">{p.name}</p>
+              <p className="text-xs text-stone-400">{p.category} · stock {p.stock}</p>
+            </div>
+            <span className="text-sm font-semibold text-red-700">{formatINR(p.price)}</span>
+            <button onClick={() => startEdit(p)} className="p-1.5 text-stone-400 hover:text-red-600"><Edit3 size={15} /></button>
+            <button onClick={() => onDelete(p.id)} className="p-1.5 text-stone-400 hover:text-red-600"><Trash2 size={15} /></button>
+          </div>
+        ))}
+        {filtered.length === 0 && <p className="text-sm text-stone-400 text-center py-8">No products found.</p>}
+      </div>
+    </div>
+  );
+}
+
+function AdminOrdersTab({ orders, onUpdateStatus }) {
+  const sorted = orders.slice().reverse();
+  if (sorted.length === 0) return <p className="text-sm text-stone-400 text-center py-10">No orders yet.</p>;
+  return (
+    <div className="space-y-3">
+      {sorted.map((o) => (
+        <div key={o.id} className="bg-white rounded-xl border border-stone-200 p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-xs text-stone-500">{o.id}</span>
+            <span className="text-xs text-stone-400">{new Date(o.timestamp).toLocaleString()}</span>
+          </div>
+          <p className="text-sm font-medium text-stone-900">{o.customerName} · {o.phone}</p>
+          <p className="text-xs text-stone-500 mb-2">{o.address}</p>
+          <ul className="text-sm text-stone-700 mb-2">
+            {o.items.map((it, idx) => <li key={idx}>{it.name} × {it.qty} — {formatINR(it.price * it.qty)}</li>)}
+          </ul>
+          {o.utr && <p className="text-xs text-stone-500 mb-2">UTR/ref: <span className="font-mono">{o.utr}</span></p>}
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-red-700">{formatINR(o.total)}</span>
+            <select value={o.status} onChange={(e) => onUpdateStatus(o.id, e.target.value)} className="text-xs border border-stone-300 rounded-lg px-2 py-1.5 outline-none focus:ring-2 focus:ring-red-300">
+              {Object.keys(STATUS_LABEL).map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+            </select>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdminSettingsTab({ settings, onSave }) {
+  const [form, setForm] = useState({ storeName: settings.storeName, upiId: settings.upiId, payeeName: settings.payeeName });
+  return (
+    <div className="max-w-sm">
+      <Field label="Store name"><input className={inputCls} value={form.storeName} onChange={(e) => setForm({ ...form, storeName: e.target.value })} /></Field>
+      <Field label="UPI ID (for the payment QR code)"><input className={inputCls} value={form.upiId} onChange={(e) => setForm({ ...form, upiId: e.target.value })} placeholder="yourname@upi" /></Field>
+      <Field label="Payee name (shown to customers)"><input className={inputCls} value={form.payeeName} onChange={(e) => setForm({ ...form, payeeName: e.target.value })} /></Field>
+      <button onClick={() => onSave({ ...settings, ...form })} className="w-full py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800">Save settings</button>
+      <p className="text-xs text-stone-400 mt-3">Your UPI ID is used only to generate the QR code customers scan to pay you — no third party ever sees it.</p>
+    </div>
+  );
+}
+
+function AdminView({ products, orders, settings, onSaveProducts, onDeleteProduct, onUpdateOrderStatus, onSaveSettings, showToastFn }) {
+  const [tab, setTab] = useState("products");
+  return (
+    <div>
+      <h2 className="text-lg font-bold text-stone-900 mb-4">Seller dashboard</h2>
+      <div className="flex gap-2 mb-5 border-b border-stone-200">
+        {[["products", "Products"], ["orders", "Orders"], ["settings", "Settings"]].map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} className={"px-3 py-2 text-sm font-medium border-b-2 -mb-px " + (tab === key ? "border-red-700 text-red-700" : "border-transparent text-stone-500")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === "products" && <AdminProductsTab products={products} onSave={onSaveProducts} onDelete={onDeleteProduct} showToastFn={showToastFn} />}
+      {tab === "orders" && <AdminOrdersTab orders={orders} onUpdateStatus={onUpdateOrderStatus} />}
+      {tab === "settings" && <AdminSettingsTab settings={settings} onSave={onSaveSettings} />}
+    </div>
+  );
+}
+
+function SellerGateModal({ pinExists, pinInput, setPinInput, pinError, onSubmit, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl p-6 max-w-xs w-full shadow-xl relative">
+        <button onClick={onClose} className="absolute top-3 right-3 text-stone-400 hover:text-stone-600"><X size={18} /></button>
+        <h3 className="font-bold text-stone-900 mb-1">{pinExists ? "Seller login" : "Set up seller PIN"}</h3>
+        <p className="text-xs text-stone-500 mb-3">{pinExists ? "Enter your PIN to manage products and orders." : "Choose a 4+ digit PIN to protect your seller dashboard. Note: this is a basic access gate, not bank-level security."}</p>
+        <input
+          type="password"
+          inputMode="numeric"
+          value={pinInput}
+          onChange={(e) => setPinInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
+          className={inputCls}
+          placeholder="Enter PIN"
+          autoFocus
+        />
+        {pinError && <p className="text-xs text-red-600 mt-1">{pinError}</p>}
+        <button onClick={onSubmit} className="w-full mt-3 py-2.5 rounded-lg bg-red-700 text-white font-semibold hover:bg-red-800">{pinExists ? "Unlock" : "Set PIN & continue"}</button>
+      </div>
+    </div>
+  );
+}
+
+export default function MaeveStore() {
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState("shop");
+  const [products, setProducts] = useState([]);
+  const [orders, setOrders] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [profile, setProfile] = useState(null);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [customerId, setCustomerId] = useState(null);
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("All");
+  const [toast, setToast] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const [sellerMode, setSellerMode] = useState(false);
+  const [showSellerGate, setShowSellerGate] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [accountForm, setAccountForm] = useState({ name: "", phone: "", email: "" });
+  const [accountError, setAccountError] = useState("");
+  const [checkoutForm, setCheckoutForm] = useState({ name: "", phone: "", address: "", city: "", pincode: "" });
+  const [checkoutErrors, setCheckoutErrors] = useState({});
+  const [utr, setUtr] = useState("");
+  const [lastOrderId, setLastOrderId] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  function showToastFn(message, type = "success") {
+    setToast({ message, type });
+  }
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let s = DEFAULT_SETTINGS, p = [], o = [], prof = null, c = [], cid = null;
+      try { const r = await window.storage.get("store-settings", true); if (r) s = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get("products", true); if (r) p = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get("orders", true); if (r) o = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get("profile", false); if (r) prof = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get("cart", false); if (r) c = JSON.parse(r.value); } catch (e) {}
+      try { const r = await window.storage.get("customer-id", false); if (r) cid = r.value; } catch (e) {}
+      if (!cid) {
+        cid = generateId();
+        try { await window.storage.set("customer-id", cid, false); } catch (e) {}
+      }
+      if (cancelled) return;
+      setSettings(s); setProducts(p); setOrders(o); setProfile(prof); setCart(c); setCustomerId(cid);
+      if (prof) setAccountForm(prof);
+      setView(prof ? "shop" : "account-setup");
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function persist(key, value, shared) {
+    try {
+      await window.storage.set(key, typeof value === "string" ? value : JSON.stringify(value), shared);
+      return true;
+    } catch (e) {
+      showToastFn("Couldn't save — please try again.", "error");
+      return false;
+    }
+  }
+
+  async function saveProductsFn(updated) {
+    setProducts(updated);
+    await persist("products", updated, true);
+  }
+  async function saveOrdersFn(updated) {
+    setOrders(updated);
+    await persist("orders", updated, true);
+  }
+  async function saveCartFn(updated) {
+    setCart(updated);
+    await persist("cart", updated, false);
+  }
+  async function saveSettingsFn(updated) {
+    setSettings(updated);
+    const ok = await persist("store-settings", updated, true);
+    if (ok) showToastFn("Settings saved", "success");
+  }
+
+  function addToCart(product) {
+    const existing = cart.find((i) => i.productId === product.id);
+    if (existing) {
+      if (existing.qty >= product.stock) { showToastFn("No more stock available", "error"); return; }
+      saveCartFn(cart.map((i) => (i.productId === product.id ? { ...i, qty: i.qty + 1 } : i)));
+    } else {
+      saveCartFn([...cart, { productId: product.id, qty: 1 }]);
+    }
+    showToastFn(`Added ${product.name} to cart`, "success");
+  }
+
+  function changeQty(productId, delta) {
+    const product = products.find((p) => p.id === productId);
+    const updated = cart.map((i) => {
+      if (i.productId !== productId) return i;
+      let newQty = i.qty + delta;
+      if (product && newQty > product.stock) newQty = product.stock;
+      if (newQty < 1) newQty = 1;
+      return { ...i, qty: newQty };
+    });
+    saveCartFn(updated);
+  }
+
+  function removeFromCart(productId) {
+    saveCartFn(cart.filter((i) => i.productId !== productId));
+  }
+
+  function deleteProduct(id) {
+    setConfirmDialog({
+      message: "Remove this product? This can't be undone.",
+      onConfirm: () => {
+        saveProductsFn(products.filter((p) => p.id !== id));
+        setConfirmDialog(null);
+        showToastFn("Product removed", "success");
+      },
+    });
+  }
+
+  function saveAccount() {
+    if (!accountForm.name.trim()) { setAccountError("Please enter your name."); return; }
+    if (!/^\d{10}$/.test(accountForm.phone.trim())) { setAccountError("Enter a valid 10-digit phone number."); return; }
+    setAccountError("");
+    persist("profile", accountForm, false).then((ok) => {
+      if (ok) {
+        setProfile(accountForm);
+        showToastFn("Account saved", "success");
+        setView("shop");
+      }
+    });
+  }
+
+  function goToCheckout() {
+    setCheckoutForm((prev) => ({
+      ...prev,
+      name: prev.name || profile?.name || "",
+      phone: prev.phone || profile?.phone || "",
+    }));
+    setView("checkout");
+  }
+
+  function continueToPayment() {
+    const errs = {};
+    if (!checkoutForm.name.trim()) errs.name = "Required";
+    if (!/^\d{10}$/.test(checkoutForm.phone.trim())) errs.phone = "Enter a valid 10-digit number";
+    if (!checkoutForm.address.trim()) errs.address = "Required";
+    if (!checkoutForm.city.trim()) errs.city = "Required";
+    if (!/^\d{6}$/.test(checkoutForm.pincode.trim())) errs.pincode = "Enter a valid 6-digit pincode";
+    setCheckoutErrors(errs);
+    if (Object.keys(errs).length === 0) { setUtr(""); setView("payment"); }
+  }
+
+  async function confirmPayment() {
+    setSubmitting(true);
+    const lines = cart.map((i) => {
+      const p = products.find((pr) => pr.id === i.productId);
+      return { productId: i.productId, name: p ? p.name : "Item", price: p ? p.price : 0, qty: i.qty };
+    });
+    const total = lines.reduce((s, l) => s + l.price * l.qty, 0);
+    const orderId = "ORD-" + Date.now().toString(36).toUpperCase();
+    const newOrder = {
+      id: orderId,
+      customerId,
+      customerName: checkoutForm.name,
+      phone: checkoutForm.phone,
+      address: `${checkoutForm.address}, ${checkoutForm.city} - ${checkoutForm.pincode}`,
+      items: lines,
+      total,
+      utr: utr.trim(),
+      status: "pending_verification",
+      timestamp: new Date().toISOString(),
+    };
+    const updatedProducts = products.map((p) => {
+      const item = cart.find((i) => i.productId === p.id);
+      return item ? { ...p, stock: Math.max(0, p.stock - item.qty) } : p;
+    });
+    const okOrders = await persist("orders", [...orders, newOrder], true);
+    const okProducts = await persist("products", updatedProducts, true);
+    const okCart = await persist("cart", [], false);
+    setSubmitting(false);
+    if (okOrders && okProducts && okCart) {
+      setOrders([...orders, newOrder]);
+      setProducts(updatedProducts);
+      setCart([]);
+      setLastOrderId(orderId);
+      setView("confirmation");
+    }
+  }
+
+  function openSellerGate() { setPinInput(""); setPinError(""); setShowSellerGate(true); }
+
+  function trySellerPin() {
+    if (!settings.sellerPin) {
+      if (pinInput.length < 4) { setPinError("PIN must be at least 4 digits."); return; }
+      saveSettingsFn({ ...settings, sellerPin: pinInput });
+      setSellerMode(true); setShowSellerGate(false); setView("admin");
+    } else if (pinInput === settings.sellerPin) {
+      setSellerMode(true); setShowSellerGate(false); setView("admin");
+    } else {
+      setPinError("Incorrect PIN.");
+    }
+  }
+
+  const cartCount = cart.reduce((s, i) => s + i.qty, 0);
+  const cartTotalForPayment = (() => {
+    return cart.reduce((s, i) => {
+      const p = products.find((pr) => pr.id === i.productId);
+      return s + (p ? p.price * i.qty : 0);
+    }, 0);
+  })();
+  const categories = ["All", ...Array.from(new Set(products.map((p) => p.category).filter(Boolean)))];
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-red-50 flex items-center justify-center">
+        <Loader2 size={28} className="animate-spin text-red-700" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-red-50 text-stone-900" style={{ fontFamily: "system-ui, sans-serif" }}>
+      <Header
+        settings={settings}
+        cartCount={cartCount}
+        view={view}
+        setView={setView}
+        profile={profile}
+        sellerMode={sellerMode}
+        onOpenSellerGate={openSellerGate}
+        onExitSeller={() => { setSellerMode(false); setView("shop"); }}
+        search={search}
+        setSearch={setSearch}
+      />
+      {!sellerMode && view === "shop" && (
+        <CategoryBar categories={categories} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} />
+      )}
+
+      <main className="max-w-6xl mx-auto px-4 py-6">
+        {view === "account-setup" && (
+          <AccountSetup accountForm={accountForm} setAccountForm={setAccountForm} onSave={saveAccount} error={accountError} />
+        )}
+        {view === "account" && profile && (
+          <AccountView profile={profile} accountForm={accountForm} setAccountForm={setAccountForm} onSave={saveAccount} error={accountError} />
+        )}
+        {view === "shop" && !sellerMode && (
+          <ShopView products={products} search={search} categoryFilter={categoryFilter} cart={cart} onAdd={addToCart} onChangeQty={changeQty} sellerConfigured={!!settings.sellerPin} />
+        )}
+        {view === "cart" && (
+          <CartView cart={cart} products={products} onChangeQty={changeQty} onRemove={removeFromCart} onCheckout={goToCheckout} setView={setView} />
+        )}
+        {view === "checkout" && (
+          <CheckoutView checkoutForm={checkoutForm} setCheckoutForm={setCheckoutForm} errors={checkoutErrors} onContinue={continueToPayment} setView={setView} />
+        )}
+        {view === "payment" && (
+          <PaymentView total={cartTotalForPayment} settings={settings} utr={utr} setUtr={setUtr} onConfirmPaid={confirmPayment} setView={setView} submitting={submitting} />
+        )}
+        {view === "confirmation" && <ConfirmationView lastOrderId={lastOrderId} setView={setView} />}
+        {view === "my-orders" && <MyOrdersView orders={orders} customerId={customerId} setView={setView} />}
+        {view === "admin" && sellerMode && (
+          <AdminView
+            products={products}
+            orders={orders}
+            settings={settings}
+            onSaveProducts={saveProductsFn}
+            onDeleteProduct={deleteProduct}
+            onUpdateOrderStatus={(id, status) => saveOrdersFn(orders.map((o) => (o.id === id ? { ...o, status } : o)))}
+            onSaveSettings={saveSettingsFn}
+            showToastFn={showToastFn}
+          />
+        )}
+      </main>
+
+      <Toast toast={toast} />
+      {showSellerGate && (
+        <SellerGateModal
+          pinExists={!!settings.sellerPin}
+          pinInput={pinInput}
+          setPinInput={setPinInput}
+          pinError={pinError}
+          onSubmit={trySellerPin}
+          onClose={() => setShowSellerGate(false)}
+        />
+      )}
+      <ConfirmModal confirmDialog={confirmDialog} onCancel={() => setConfirmDialog(null)} />
+    </div>
+  );
+}
